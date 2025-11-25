@@ -43,9 +43,9 @@ The app tracks your reps and displays a workout summary at the end.
 
 ### 1️⃣ Clone the repo
 git clone https://github.com/VardhanRaj369/AI_Workout_Tracker.git
-##cd ai-workout-tracker
-##streamlit run app.py
-###3️⃣ Run the app
+cd ai-workout-tracker
+streamlit run app.py
+3️⃣ Run the app
 streamlit run app.py
 
 🧩 Tech Stack
