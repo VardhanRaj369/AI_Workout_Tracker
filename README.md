@@ -42,7 +42,7 @@ The app tracks your reps and displays a workout summary at the end.
 ## 🛠️ Installation (Local)
 
 ### 1️⃣ Clone the repo
-git clone https://github.com/VardhanRaj369/AI_Workout_Tracker
+git clone https://github.com/VardhanRaj369/AI_Workout_Tracker.git  \n
 cd ai-workout-tracker
 streamlit run app.py
 3️⃣ Run the app
