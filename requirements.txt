@@ -1,5 +1,7 @@
+python==3.12.7
 streamlit
 opencv-python-headless
 mediapipe==0.10.21
 numpy
-protobuf==3.20.1
+protobuf
+
