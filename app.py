@@ -1,7 +1,14 @@
 import streamlit as st
+import cv2
+import numpy as np
+import mediapipe as mp
 import time
 import plotly.graph_objects as go
-import random
+from PIL import Image
+import av
+from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
+import tempfile
+import os
 
 # Page configuration
 st.set_page_config(
@@ -22,78 +29,230 @@ st.markdown("""
         margin-top: 2rem;
         margin-bottom: 1rem;
     }
-    .demo-box {
-        border: 2px dashed #ccc;
-        padding: 20px;
+    .camera-container {
+        border: 2px solid #ddd;
         border-radius: 10px;
-        margin: 10px 0;
-        text-align: center;
+        padding: 10px;
+        background: #f9f9f9;
     }
 </style>
 """, unsafe_allow_html=True)
 
+class PoseDetector:
+    def __init__(self):
+        self.mp_pose = mp.solutions.pose
+        self.pose = self.mp_pose.Pose(
+            min_detection_confidence=0.7,
+            min_tracking_confidence=0.7,
+            model_complexity=1  # Lower complexity for better performance
+        )
+        self.mp_drawing = mp.solutions.drawing_utils
+        self.mp_drawing_styles = mp.solutions.drawing_styles
+
+    def calculate_angle(self, a, b, c):
+        """Calculate angle between three points"""
+        a = np.array(a)
+        b = np.array(b)
+        c = np.array(c)
+        
+        radians = np.arctan2(c[1]-b[1], c[0]-b[0]) - np.arctan2(a[1]-b[1], a[0]-b[0])
+        angle = np.abs(radians*180.0/np.pi)
+        
+        if angle > 180.0:
+            angle = 360 - angle
+            
+        return angle
+
+    def detect_exercise(self, landmarks, exercise_type):
+        """Detect specific exercise based on pose landmarks"""
+        angles = {}
+        
+        try:
+            if exercise_type == "Push-ups":
+                # Shoulder-Elbow-Wrist angle
+                shoulder = [landmarks[self.mp_pose.PoseLandmark.LEFT_SHOULDER.value].x,
+                           landmarks[self.mp_pose.PoseLandmark.LEFT_SHOULDER.value].y]
+                elbow = [landmarks[self.mp_pose.PoseLandmark.LEFT_ELBOW.value].x,
+                        landmarks[self.mp_pose.PoseLandmark.LEFT_ELBOW.value].y]
+                wrist = [landmarks[self.mp_pose.PoseLandmark.LEFT_WRIST.value].x,
+                        landmarks[self.mp_pose.PoseLandmark.LEFT_WRIST.value].y]
+                angles['elbow'] = self.calculate_angle(shoulder, elbow, wrist)
+                
+            elif exercise_type == "Squats":
+                # Hip-Knee-Ankle angle
+                hip = [landmarks[self.mp_pose.PoseLandmark.LEFT_HIP.value].x,
+                      landmarks[self.mp_pose.PoseLandmark.LEFT_HIP.value].y]
+                knee = [landmarks[self.mp_pose.PoseLandmark.LEFT_KNEE.value].x,
+                       landmarks[self.mp_pose.PoseLandmark.LEFT_KNEE.value].y]
+                ankle = [landmarks[self.mp_pose.PoseLandmark.LEFT_ANKLE.value].x,
+                        landmarks[self.mp_pose.PoseLandmark.LEFT_ANKLE.value].y]
+                angles['knee'] = self.calculate_angle(hip, knee, ankle)
+                
+            elif exercise_type == "Bicep Curls":
+                # Shoulder-Elbow-Wrist angle
+                shoulder = [landmarks[self.mp_pose.PoseLandmark.LEFT_SHOULDER.value].x,
+                           landmarks[self.mp_pose.PoseLandmark.LEFT_SHOULDER.value].y]
+                elbow = [landmarks[self.mp_pose.PoseLandmark.LEFT_ELBOW.value].x,
+                        landmarks[self.mp_pose.PoseLandmark.LEFT_ELBOW.value].y]
+                wrist = [landmarks[self.mp_pose.PoseLandmark.LEFT_WRIST.value].x,
+                        landmarks[self.mp_pose.PoseLandmark.LEFT_WRIST.value].y]
+                angles['elbow'] = self.calculate_angle(shoulder, elbow, wrist)
+                
+            elif exercise_type == "Jumping Jacks":
+                # Calculate distance between wrists
+                left_wrist = [landmarks[self.mp_pose.PoseLandmark.LEFT_WRIST.value].x,
+                             landmarks[self.mp_pose.PoseLandmark.LEFT_WRIST.value].y]
+                right_wrist = [landmarks[self.mp_pose.PoseLandmark.RIGHT_WRIST.value].x,
+                              landmarks[self.mp_pose.PoseLandmark.RIGHT_WRIST.value].y]
+                
+                wrist_distance = np.sqrt((left_wrist[0]-right_wrist[0])**2 + (left_wrist[1]-right_wrist[1])**2)
+                angles['wrist_distance'] = wrist_distance
+                
+            elif exercise_type == "Shoulder Press":
+                # Vertical movement detection
+                shoulder = [landmarks[self.mp_pose.PoseLandmark.LEFT_SHOULDER.value].x,
+                           landmarks[self.mp_pose.PoseLandmark.LEFT_SHOULDER.value].y]
+                wrist = [landmarks[self.mp_pose.PoseLandmark.LEFT_WRIST.value].x,
+                        landmarks[self.mp_pose.PoseLandmark.LEFT_WRIST.value].y]
+                
+                vertical_movement = shoulder[1] - wrist[1]
+                angles['vertical'] = vertical_movement
+                
+        except Exception as e:
+            st.error(f"Error in pose detection: {e}")
+            
+        return angles
+
+class VideoProcessor(VideoProcessorBase):
+    def __init__(self):
+        self.detector = PoseDetector()
+        self.exercise_type = "Push-ups"
+        self.rep_count = 0
+        self.stage = None
+        self.start_time = time.time()
+        self.workout_data = []
+        
+    def recv(self, frame):
+        img = frame.to_ndarray(format="bgr24")
+        
+        # Process image
+        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        results = self.detector.pose.process(img_rgb)
+        
+        current_time = time.time() - self.start_time
+        
+        if results.pose_landmarks:
+            # Draw pose landmarks
+            self.detector.mp_drawing.draw_landmarks(
+                img,
+                results.pose_landmarks,
+                self.detector.mp_pose.POSE_CONNECTIONS,
+                landmark_drawing_spec=self.detector.mp_drawing_styles.get_default_pose_landmarks_style())
+            
+            # Exercise detection logic
+            angles = self.detector.detect_exercise(results.pose_landmarks.landmark, self.exercise_type)
+            
+            if angles:
+                # Store workout data
+                self.workout_data.append({
+                    'time': current_time,
+                    'rep_count': self.rep_count,
+                    'stage': self.stage,
+                    'angles': angles
+                })
+                
+                # Exercise-specific rep counting
+                if self.exercise_type == "Push-ups":
+                    main_angle = angles.get('elbow', 0)
+                    if main_angle > 160 and self.stage != "up":
+                        self.stage = "up"
+                    if main_angle < 90 and self.stage == "up":
+                        self.stage = "down"
+                        self.rep_count += 1
+                        
+                elif self.exercise_type == "Squats":
+                    main_angle = angles.get('knee', 0)
+                    if main_angle > 160 and self.stage != "up":
+                        self.stage = "up"
+                    if main_angle < 100 and self.stage == "up":
+                        self.stage = "down"
+                        self.rep_count += 1
+                        
+                elif self.exercise_type == "Bicep Curls":
+                    main_angle = angles.get('elbow', 0)
+                    if main_angle > 160 and self.stage != "down":
+                        self.stage = "down"
+                    if main_angle < 30 and self.stage == "down":
+                        self.stage = "up"
+                        self.rep_count += 1
+                
+                elif self.exercise_type == "Jumping Jacks":
+                    wrist_distance = angles.get('wrist_distance', 0)
+                    
+                    if wrist_distance > 0.3 and self.stage != "arms_up":
+                        self.stage = "arms_up"
+                    if wrist_distance < 0.15 and self.stage == "arms_up":
+                        self.stage = "arms_down"
+                        self.rep_count += 1
+                
+                elif self.exercise_type == "Shoulder Press":
+                    vertical_movement = angles.get('vertical', 0)
+                    
+                    if vertical_movement > 0.15 and self.stage != "down":
+                        self.stage = "down"
+                    if vertical_movement < -0.1 and self.stage == "down":
+                        self.stage = "up"
+                        self.rep_count += 1
+                
+                # Display information
+                cv2.putText(img, f'Exercise: {self.exercise_type}', (10, 30), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                cv2.putText(img, f'REPS: {self.rep_count}', (10, 70), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                cv2.putText(img, f'STAGE: {self.stage}', (10, 110), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                
+                # Show angle/distance info
+                if self.exercise_type == "Jumping Jacks":
+                    cv2.putText(img, f'DISTANCE: {wrist_distance:.2f}', (10, 150), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                elif self.exercise_type == "Shoulder Press":
+                    cv2.putText(img, f'MOVEMENT: {vertical_movement:.2f}', (10, 150), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                else:
+                    main_angle = list(angles.values())[0]
+                    cv2.putText(img, f'ANGLE: {main_angle:.1f}', (10, 150), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+        
+        return av.VideoFrame.from_ndarray(img, format="bgr24")
+
 def initialize_workout_state():
     """Initialize workout state in session state"""
-    if 'workout_state' not in st.session_state:
-        st.session_state.workout_state = {
-            'rep_count': 0,
-            'stage': None,
-            'start_time': time.time(),
-            'exercise_type': "Push-ups",
-            'last_update': time.time(),
-            'workout_active': False,
-            'demo_mode': True
-        }
+    if 'workout_active' not in st.session_state:
+        st.session_state.workout_active = False
     if 'show_report' not in st.session_state:
         st.session_state.show_report = False
+    if 'current_exercise' not in st.session_state:
+        st.session_state.current_exercise = "Push-ups"
 
 def reset_workout():
-    """Reset workout state for new exercise"""
-    st.session_state.workout_state = {
-        'rep_count': 0,
-        'stage': None,
-        'start_time': time.time(),
-        'exercise_type': st.session_state.workout_state['exercise_type'],
-        'last_update': time.time(),
-        'workout_active': False,
-        'demo_mode': True
-    }
+    """Reset workout state"""
+    st.session_state.workout_active = False
+    st.session_state.show_report = False
 
-def simulate_exercise_detection(exercise_type, workout_state):
-    """Simulate exercise detection for demo purposes"""
-    # Simulate random rep detection (for demo)
-    if random.random() < 0.3:  # 30% chance of detecting a rep
-        if workout_state['stage'] is None:
-            workout_state['stage'] = "starting"
-        elif workout_state['stage'] == "starting":
-            workout_state['stage'] = "halfway"
-        elif workout_state['stage'] == "halfway":
-            workout_state['stage'] = "complete"
-            workout_state['rep_count'] += 1
-            workout_state['last_update'] = time.time()
-        elif workout_state['stage'] == "complete":
-            workout_state['stage'] = "starting"
-    
-    workout_state['workout_active'] = True
-    return workout_state
-
-def generate_workout_report():
+def generate_workout_report(workout_data, exercise_type, rep_count, duration):
     """Generate a comprehensive workout report"""
-    workout_state = st.session_state.workout_state
-    
-    if workout_state['rep_count'] == 0:
+    if not workout_data:
         return None
-    
-    duration = time.time() - workout_state['start_time']
     
     # Create report
     report = {
-        'exercise_type': workout_state['exercise_type'],
-        'total_reps': workout_state['rep_count'],
+        'exercise_type': exercise_type,
+        'total_reps': rep_count,
         'workout_duration': duration,
-        'average_reps_per_minute': (workout_state['rep_count'] / duration * 60) if duration > 0 else 0,
-        'calories_burned': workout_state['rep_count'] * 0.5,
-        'performance_score': min(100, (workout_state['rep_count'] / 20) * 100)
+        'average_reps_per_minute': (rep_count / duration * 60) if duration > 0 else 0,
+        'calories_burned': rep_count * 0.5,
+        'performance_score': min(100, (rep_count / 20) * 100)
     }
     
     return report
@@ -122,7 +281,7 @@ def get_health_tips(performance_score, reps_count):
 
 def main():
     st.markdown('<h1 class="main-title">💪 AI Workout Tracker</h1>', unsafe_allow_html=True)
-    st.markdown("Track your exercises and get personalized fitness insights!")
+    st.markdown("Real-time exercise tracking using computer vision and pose estimation!")
     
     # Initialize workout state
     initialize_workout_state()
@@ -136,10 +295,7 @@ def main():
             ["Push-ups", "Squats", "Bicep Curls", "Jumping Jacks", "Shoulder Press"]
         )
         
-        # Update exercise type in workout state
-        if exercise_type != st.session_state.workout_state['exercise_type']:
-            st.session_state.workout_state['exercise_type'] = exercise_type
-            reset_workout()
+        st.session_state.current_exercise = exercise_type
         
         st.header("📊 Exercise Instructions")
         if exercise_type == "Push-ups":
@@ -148,6 +304,8 @@ def main():
             - Keep your body straight
             - Lower until elbows are at 90°
             - Push back up to starting position
+            
+            **Detection:** Tracks elbow angle
             """)
         elif exercise_type == "Squats":
             st.write("""
@@ -155,6 +313,8 @@ def main():
             - Feet shoulder-width apart
             - Lower until thighs are parallel to floor
             - Keep knees behind toes
+            
+            **Detection:** Tracks knee angle
             """)
         elif exercise_type == "Bicep Curls":
             st.write("""
@@ -162,6 +322,8 @@ def main():
             - Keep elbows close to body
             - Curl weight up to shoulders
             - Lower slowly with control
+            
+            **Detection:** Tracks elbow angle
             """)
         elif exercise_type == "Jumping Jacks":
             st.write("""
@@ -169,6 +331,8 @@ def main():
             - Start with feet together, arms at sides
             - Jump while spreading legs and raising arms
             - Return to starting position
+            
+            **Detection:** Tracks arm distance
             """)
         elif exercise_type == "Shoulder Press":
             st.write("""
@@ -176,126 +340,81 @@ def main():
             - Start with hands at shoulder level
             - Press upward until arms are fully extended
             - Lower back to starting position
+            
+            **Detection:** Tracks vertical movement
             """)
         
-        # Current workout stats in sidebar
-        st.header("📈 Current Stats")
-        workout_state = st.session_state.workout_state
-        st.metric("Repetitions", workout_state['rep_count'])
-        st.metric("Current Stage", workout_state['stage'] or "Starting...")
-        st.metric("Workout Duration", f"{time.time() - workout_state['start_time']:.1f}s")
-        
-        # Manual rep counter for demo
-        st.header("🎮 Demo Controls")
-        if st.button("➕ Add Rep", use_container_width=True):
-            workout_state['rep_count'] += 1
-            workout_state['last_update'] = time.time()
-            workout_state['workout_active'] = True
-        
-        if st.button("🔄 Reset Counter", use_container_width=True):
-            reset_workout()
+        st.header("🎯 Tips for Best Results")
+        st.write("""
+        - Ensure good lighting
+        - Stand 2-3 meters from camera
+        - Wear contrasting clothing
+        - Make sure your full body is visible
+        - Perform exercises slowly and deliberately
+        """)
     
     # Main content
-    st.markdown('<div class="section-header">🎥 Workout Interface</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-header">🎥 Live Camera Feed</div>', unsafe_allow_html=True)
     
-    # Demo mode explanation
-    st.markdown("""
-    <div class="demo-box">
-        <h3>🏗️ Demo Mode</h3>
-        <p>This is a demonstration version of the AI Workout Tracker.</p>
-        <p>In a full implementation, this would use computer vision to track your exercises in real-time.</p>
-        <p>For now, use the controls in the sidebar to simulate your workout!</p>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    # Exercise visualization
-    workout_state = st.session_state.workout_state
-    exercise = workout_state['exercise_type']
-    
-    col1, col2 = st.columns([1, 1])
-    
-    with col1:
-        st.subheader(f"Current Exercise: {exercise}")
+    # Camera container
+    with st.container():
+        st.markdown("""
+        <div class="camera-container">
+        <h4>Real-time Pose Detection</h4>
+        <p>Allow camera access and position yourself in frame. The system will detect your pose and count repetitions automatically.</p>
+        </div>
+        """, unsafe_allow_html=True)
         
-        # Simple ASCII art for different exercises
-        exercise_art = {
-            "Push-ups": """
-            🤸 Push-up Position:
-                __________
-               |          |
-               |   YOU    |
-               |__________|
-                /        \\
-            """,
-            "Squats": """
-            🏋️ Squat Position:
-                ╔════════╗
-                ║   🧍   ║
-                ╚════════╝
-                  /    \\
-            """,
-            "Bicep Curls": """
-            💪 Bicep Curl:
-                🧍‍♂️↑
-                | |
-                💪💪
-            """,
-            "Jumping Jacks": """
-            🤸 Jumping Jack:
-                🧍‍♂️✖️
-                / \\
-            """,
-            "Shoulder Press": """
-            🏋️ Shoulder Press:
-                🧍‍♂️↑
-                💪💪
-                | |
-            """
-        }
+        # Initialize video processor
+        webrtc_ctx = webrtc_streamer(
+            key="workout-tracker",
+            video_processor_factory=VideoProcessor,
+            rtc_configuration=RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}),
+            media_stream_constraints={"video": True, "audio": False},
+        )
         
-        st.text(exercise_art.get(exercise, "Select an exercise to see form"))
+        # Update exercise type in video processor
+        if webrtc_ctx.video_processor:
+            webrtc_ctx.video_processor.exercise_type = st.session_state.current_exercise
     
-    with col2:
-        st.subheader("Real-time Feedback")
-        if workout_state['workout_active']:
-            if workout_state['rep_count'] > 0:
-                st.success(f"✅ Great form! Keep going!")
-                st.info(f"**Reps completed:** {workout_state['rep_count']}")
-                st.info(f"**Current stage:** {workout_state['stage']}")
-            else:
-                st.warning("🔄 Get ready to start your first rep!")
-        else:
-            st.info("🏁 Click 'Add Rep' in sidebar to start tracking!")
-        
-        # Progress bar
-        if workout_state['rep_count'] > 0:
-            progress = min(workout_state['rep_count'] / 20, 1.0)  # Cap at 20 reps for progress
-            st.progress(progress)
-            st.caption(f"Progress: {workout_state['rep_count']}/20 reps")
-    
-    # Auto-simulate button
-    if st.button("🎬 Auto-Simulate Workout (Add 5 reps)", use_container_width=True):
-        workout_state = st.session_state.workout_state
-        workout_state['rep_count'] += 5
-        workout_state['workout_active'] = True
-        workout_state['last_update'] = time.time()
-        st.success("Added 5 reps to your workout!")
-        st.rerun()
+    # Live Stats
+    if webrtc_ctx.video_processor:
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Current Exercise", st.session_state.current_exercise)
+        with col2:
+            st.metric("Repetitions", webrtc_ctx.video_processor.rep_count)
+        with col3:
+            st.metric("Current Stage", webrtc_ctx.video_processor.stage or "Starting...")
+        with col4:
+            workout_duration = time.time() - webrtc_ctx.video_processor.start_time
+            st.metric("Duration", f"{workout_duration:.1f}s")
     
     # Finish Workout Button
     st.markdown("---")
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         if st.button("🏁 Finish Workout & Generate Report", use_container_width=True, type="primary"):
-            workout_state = st.session_state.workout_state
-            if workout_state['rep_count'] > 0:
-                report = generate_workout_report()
-                if report:
-                    st.session_state.workout_report = report
-                    st.session_state.show_report = True
-                    st.rerun()
+            if webrtc_ctx.video_processor:
+                rep_count = webrtc_ctx.video_processor.rep_count
+                workout_duration = time.time() - webrtc_ctx.video_processor.start_time
+                
+                if rep_count > 0:
+                    report = generate_workout_report(
+                        webrtc_ctx.video_processor.workout_data,
+                        st.session_state.current_exercise,
+                        rep_count,
+                        workout_duration
+                    )
+                    
+                    if report:
+                        st.session_state.workout_report = report
+                        st.session_state.show_report = True
+                        st.rerun()
+                else:
+                    st.error("❌ Complete at least 1 rep to generate a workout report!")
             else:
-                st.error("❌ Complete at least 1 rep to generate a workout report!")
+                st.warning("Please start the camera first!")
     
     # Workout Report Section
     if st.session_state.get('show_report', False) and st.session_state.get('workout_report'):
@@ -365,7 +484,6 @@ def main():
         st.markdown("---")
         if st.button("🔄 Start New Workout", use_container_width=True):
             reset_workout()
-            st.session_state.show_report = False
             st.rerun()
 
 if __name__ == "__main__":
