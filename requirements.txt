@@ -1,11 +1,12 @@
-streamlit==1.38.0
+streamlit==1.39.0
+rich==13.9.4
+numpy==1.26.4
 av==12.3.0
 plotly==5.24.0
 streamlit-webrtc==0.47.1
 mediapipe==0.10.14
-numpy==2.1.1
-# Block full OpenCV deps that MediaPipe pulls
+# Block full OpenCV that MediaPipe pulls
 opencv-python==0.0.0
 opencv-contrib-python==0.0.0
-# Force headless (overrides above)
+# Force headless (overrides)
 opencv-python-headless==4.10.0.84
