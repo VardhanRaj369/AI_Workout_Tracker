@@ -1,4 +1,11 @@
-import streamlit as st
+import os
+# Disable OpenCV GUI backends (fixes libGL on headless)
+os.environ["OPENCV_IO_ENABLE_OPENEXR"] = "0"
+os.environ["OPENCV_VIDEOIO_PRIORITY_MSMF"] = "0"
+os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;0"
+os.environ["QT_QPA_PLATFORM"] = "offscreen"  # Extra for any Qt deps in MediaPipe
+
+
 import cv2
 import numpy as np
 import mediapipe as mp
@@ -437,4 +444,5 @@ def main():
 
 
 if __name__ == "__main__":
+
     main()
