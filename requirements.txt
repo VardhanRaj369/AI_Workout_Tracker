@@ -1,12 +1,7 @@
 streamlit==1.39.0
-rich==13.7.1
 numpy==1.26.4
 av==12.3.0
 plotly==5.24.0
 streamlit-webrtc==0.47.1
 mediapipe==0.10.14
-# Block full OpenCV deps (MediaPipe pulls these)
-opencv-python==0.0.0
-opencv-contrib-python==0.0.0
-# Force headless OpenCV (no GUI, fixes libGL)
 opencv-python-headless==4.10.0.84
